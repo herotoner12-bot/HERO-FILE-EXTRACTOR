@@ -1,0 +1,109 @@
+name: Extract (استخراج)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "مسار الملف أو المجلد"
+        default: "uploads"
+      source_url:
+        description: "رابط تنزيل مباشر (اختياري)"
+        required: false
+      types:
+        description: "الامتدادات المطلوبة مثل glb,gltf"
+        required: false
+      categories:
+        description: "images,video,audio,models3d,documents"
+        required: false
+      match:
+        description: "كلمات البحث مثل trees=tree|pine|palm"
+        required: false
+      exclude:
+        description: "كلمات الاستبعاد"
+        required: false
+      list_only:
+        description: "فحص فقط دون استخراج"
+        type: boolean
+        default: false
+      unpack_containers:
+        description: "فك ملفات docx وxlsx وapk وjar"
+        type: boolean
+        default: false
+      publish:
+        description: "مكان حفظ النتائج"
+        type: choice
+        default: artifact
+        options:
+          - artifact
+          - release
+          - branch
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unrar || true
+          pip install -r requirements.txt
+
+      - name: Download extra sources
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+        run: |
+          mkdir -p _downloads
+          for u in $SOURCE_URL; do
+            f="_downloads/$(basename "${u%%\?*}")"
+            curl -L --fail --retry 3 -o "$f" "$u"
+          done
+
+      - name: Run extractor
+        env:
+          SOURCE: ${{ inputs.source }}
+          TYPES: ${{ inputs.types }}
+          CATEGORIES: ${{ inputs.categories }}
+          MATCH: ${{ inputs.match }}
+          EXCLUDE: ${{ inputs.exclude }}
+          LIST_ONLY: ${{ inputs.list_only }}
+          UNPACK: ${{ inputs.unpack_containers }}
+        run: |
+          INPUTS=()
+          IFS=',' read -ra SRC <<< "$SOURCE"
+          for s in "${SRC[@]}"; do
+            s="$(echo "$s" | xargs)"
+            [ -e "$s" ] && INPUTS+=("$s")
+          done
+          [ -n "$(ls -A _downloads 2>/dev/null)" ] && INPUTS+=("_downloads")
+          [ ${#INPUTS[@]} -gt 0 ] || exit 1
+          ARGS=()
+          [ -n "$TYPES" ] && ARGS+=(--type "$TYPES")
+          [ -n "$CATEGORIES" ] && ARGS+=(--category "$CATEGORIES")
+          [ -n "$MATCH" ] && ARGS+=(--match "$MATCH")
+          [ -n "$EXCLUDE" ] && ARGS+=(--exclude "$EXCLUDE")
+          [ "$LIST_ONLY" = "true" ] && ARGS+=(--list-only)
+          [ "$UNPACK" = "true" ] && ARGS+=(--unpack-containers)
+          python -m hero_extract "${INPUTS[@]}" -o results "${ARGS[@]}"
+
+      - name: Show report
+        if: always()
+        run: |
+          [ -f results/REPORT.md ] && cat results/REPORT.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extraction-results
+          path: results
+          if-no-files-found: ignore
